@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="DocAgent.Api/DocAgent.Api.csproj" />
+  <Project Path="DocAgent.Kernel/DocAgent.Kernel.csproj" />
+</Solution>
