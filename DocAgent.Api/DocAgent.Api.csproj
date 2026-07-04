@@ -10,4 +10,10 @@
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.6" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\DocAgent.Core\DocAgent.Core.csproj" />
+    <ProjectReference Include="..\DocAgent.Application\DocAgent.Application.csproj" />
+    <ProjectReference Include="..\DocAgent.Infrastructure\DocAgent.Infrastructure.csproj" />
+  </ItemGroup>
+
 </Project>

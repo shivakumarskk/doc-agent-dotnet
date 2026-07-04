@@ -1,4 +1,10 @@
 <Solution>
+  <Folder Name="/Solution Items/">
+    <File Path=".gitignore" />
+  </Folder>
   <Project Path="DocAgent.Api/DocAgent.Api.csproj" />
+  <Project Path="DocAgent.Application/DocAgent.Application.csproj" />
+  <Project Path="DocAgent.Core/DocAgent.Core.csproj" />
+  <Project Path="DocAgent.Infrastructure/DocAgent.Infrastructure.csproj" />
   <Project Path="DocAgent.Kernel/DocAgent.Kernel.csproj" />
 </Solution>
