@@ -4,19 +4,6 @@ A sophisticated .NET 10-based REST API application that combines **Retrieval-Aug
 
 ---
 
-## 📋 Table of Contents
-
-- [What is DocAgent?](#what-is-docagent)
-- [System Architecture](#system-architecture)
-- [External Dependencies & Setup](#external-dependencies--setup)
-- [Solution Structure](#solution-structure)
-- [API Endpoints](#api-endpoints)
-- [Getting Started](#getting-started)
-- [Configuration](#configuration)
-- [Project Layers](#project-layers)
-
----
-
 ## 🎯 What is DocAgent?
 
 **DocAgent** is an intelligent document analysis platform that:
@@ -744,18 +731,6 @@ Warning: Could not initialize ChromaDB
 - [ChromaDB Docs](https://docs.trychroma.com)
 - [ONNX Runtime](https://onnxruntime.ai)
 - [ASP.NET Core Docs](https://learn.microsoft.com/aspnet)
-
----
-
-## 📄 License
-
-[Add your license here]
-
----
-
-## 🤝 Contributing
-
-[Add contribution guidelines here]
 
 ---
 
