@@ -149,8 +149,34 @@ curl http://localhost:8000/api/v1/heartbeat
 **What it is:** Lightweight embedding models that convert text to vectors for semantic search.
 
 **Model Files Required:**
-- `Models/model.onnx` - The ONNX runtime model
-- `Models/tokenizer.json` - HuggingFace tokenizer for the model
+- `Models/model.onnx` - The ONNX runtime model used to convert tokenized text into dense numeric vectors
+- `Models/tokenizer.json` - The HuggingFace tokenizer definition that converts raw text into model-ready token IDs and attention masks
+
+**Why the application needs both files:**
+- The **tokenizer** is required first because the ONNX model cannot read raw strings directly. It expects structured numeric inputs such as `input_ids`, `attention_mask`, and `token_type_ids`.
+- The **ONNX model** is required next because it transforms those tokenized inputs into semantic vector representations called embeddings.
+- Without the tokenizer, the application cannot prepare valid model input.
+- Without the ONNX model, the application cannot generate embeddings for document chunks or user questions.
+
+**How they work together in DocAgent:**
+1. A document chunk or question enters `EmbeddingService`.
+2. The HuggingFace tokenizer reads the text and breaks it into tokens/subwords.
+3. Those tokens are converted into numeric IDs and masks.
+4. The ONNX transformer model runs inference over those IDs.
+5. The model produces token-level hidden states.
+6. The application performs mean pooling to reduce token-level output into one fixed-size embedding vector.
+7. That final vector is stored in ChromaDB for document chunks or used as the query vector for search.
+
+**Why ONNX is used here:**
+- ONNX allows local inference inside the .NET application.
+- It avoids calling an external embedding API for every chunk and question.
+- It gives stable and repeatable embeddings as long as the same model and tokenizer are used.
+- It integrates efficiently with `Microsoft.ML.OnnxRuntime` in the current implementation.
+
+**Why HuggingFace tokenizer is used here:**
+- Transformer embedding models require the exact tokenizer they were trained with.
+- The tokenizer preserves how words, punctuation, and subwords are split for the model.
+- Using a mismatched tokenizer would produce token IDs that do not align with the model and would degrade or break retrieval quality.
 
 **Setup:**
 Place model files in the project root under `Models/` directory:
@@ -175,6 +201,112 @@ DocAgent.Api/
 
 ---
 
+## 🧠 Special Section: How Embeddings, Vector Search, and Context Generation Work
+
+This section explains the full Retrieval-Augmented Generation (RAG) flow used by DocAgent when answering a question through `/api/rag/ask`.
+
+### 1. What is an embedding?
+An embedding is a numeric representation of text. Instead of storing meaning as plain words only, the system converts a sentence or document chunk into a floating-point vector such as:
+
+```text
+[0.1058, 0.4946, 0.1805, ...]
+```
+
+The purpose of the embedding is to place text into a high-dimensional vector space where semantically similar text is closer together than unrelated text.
+
+Examples of semantically related text:
+- "What is the score of Nikhila?"
+- "How many marks did Nikhila get?"
+
+The wording is different, but the meaning is close, so the embeddings should also be close.
+
+### 2. How a question is turned into an embedding in this application
+DocAgent uses `DocAgent.Infrastructure.Services.EmbeddingService` for embedding generation.
+
+The detailed flow is:
+1. The incoming question text is validated.
+2. The HuggingFace tokenizer converts the raw question into token IDs.
+3. Attention masks and token type IDs are prepared.
+4. Those arrays are passed into the ONNX transformer model through `Microsoft.ML.OnnxRuntime`.
+5. The model returns token-level hidden states with shape similar to `[batch, sequence_length, hidden_size]`.
+6. The application performs mean pooling over the valid tokens.
+7. The result is one fixed-size embedding vector for the entire question.
+
+The same process is used during document ingestion for every chunk of every uploaded file.
+
+### 3. How document embeddings are generated and stored
+During document ingestion:
+1. The uploaded PDF or text is read.
+2. The extracted text is split into chunks.
+3. Each chunk is passed to the same embedding service.
+4. Each chunk receives its own embedding vector.
+5. The system stores the following in ChromaDB:
+   - chunk ID
+   - chunk text
+   - chunk embedding
+   - metadata such as `document_id`
+
+This means a single uploaded document may produce hundreds or thousands of searchable chunk vectors.
+
+### 4. How vector search works in DocAgent
+When `/api/rag/ask` or `/api/rag/query` is called:
+1. The user question is converted into an embedding.
+2. That embedding is sent to `ChromaVectorStore.QueryAsync(...)`.
+3. ChromaDB compares the query vector against the stored chunk embeddings.
+4. ChromaDB returns the nearest vectors according to vector similarity.
+5. The application receives the matching chunk text and metadata.
+
+This is called **semantic retrieval** because the system searches by meaning, not only by exact word overlap.
+
+### 5. How relevant chunks are chosen
+ChromaDB uses the query embedding and compares it with all candidate chunk embeddings in the selected collection. The nearest vectors are treated as the most relevant chunks.
+
+With the current implementation, DocAgent can optionally narrow the search to a single uploaded document by using `DocumentFilter`. In that case, the application sends a Chroma metadata filter like:
+
+```json
+{ "document_id": "NEET_UG_2026" }
+```
+
+That prevents chunks from unrelated uploaded files from participating in retrieval.
+
+### 6. How context is generated for the LLM
+After vector retrieval, DocAgent builds context for the language model:
+1. The returned chunks are converted into `ContextChunkDto` objects for API output.
+2. The raw chunk text is assembled into a prompt context block.
+3. Each chunk is prefixed with its document ID.
+4. All selected chunks are joined together and inserted into the final LLM prompt.
+
+For `/api/rag/ask`, the logical flow is:
+- question → embedding → vector search → context assembly → LLM answer generation
+
+### 7. Why this context generation step is important
+The LLM is not expected to answer from memory alone. It is given retrieved evidence first. This makes the answer:
+- grounded in uploaded documents
+- more explainable
+- less likely to hallucinate unrelated content
+
+Without context generation, the endpoint would behave like plain text generation instead of RAG.
+
+### 8. Why retrieval quality depends on consistent embeddings
+The same embedding model and tokenizer must be used for:
+- document chunk embeddings
+- user question embeddings
+
+If ingestion uses one embedding space and questions use another, vector similarity becomes unreliable and ChromaDB may return poor or empty matches.
+
+### 9. Why semi-structured PDFs can still be hard
+Rank lists, tables, and scanned PDF-style layouts are harder than natural prose because:
+- extracted text can be noisy
+- rows may be split across chunks
+- names and scores may appear in dense compressed text
+- semantic retrieval is strong for meaning, but exact row lookup may still need structured parsing or post-processing
+
+That is why rank-list-style documents often benefit from both:
+- embedding-based retrieval for narrowing context
+- exact text parsing or record extraction for final precision
+
+---
+
 ## 📦 Solution Structure
 
 ```
@@ -183,6 +315,7 @@ DocAgent Solution (5 Projects)
 ├── 📁 DocAgent.Core
 │   ├── Interfaces/
 │   │   ├── IDocumentService.cs         ← Core business logic contracts
+│   │   ├── ICollectionAdminService.cs  ← Collection/database administration contracts
 │   │   ├── IEmbeddingService.cs        ← Embedding generation
 │   │   ├── IVectorStore.cs             ← Vector DB operations
 │   │   ├── ILlmClient.cs               ← LLM interactions
@@ -200,18 +333,21 @@ DocAgent Solution (5 Projects)
 │   │   ├── IngestResponseDto.cs        ← Upload confirmation
 │   │   ├── GenerateRequestDto.cs       ← LLM generation input
 │   │   ├── FeedbackDto.cs              ← Feedback data
+│   │   ├── CollectionAdminDtos.cs      ← Collection/database admin requests & responses
 │   │   └── ResponseDtos.cs             ← Other response models
 │   │
 │   └── Models/
 │       ├── Document.cs                 ← Document entity
 │       ├── DocumentChunk.cs            ← Text chunk entity
 │       ├── Feedback.cs                 ← Feedback entity
-│       └── QueryResult.cs              ← Query result entity
+│       ├── QueryResult.cs              ← Query result entity
+│       └── VectorCollectionInfo.cs     ← Collection metadata model
 │
 ├── 📁 DocAgent.Application
 │   └── Services/
-│       └── DocumentService.cs          ← Business logic implementation
-│                                           (orchestrates: embed, search, ask)
+│       ├── DocumentService.cs          ← Business logic implementation
+│       │                                   (orchestrates: embed, search, ask)
+│       └── CollectionAdminService.cs   ← Chroma collection/database management rules
 │
 ├── 📁 DocAgent.Infrastructure
 │   ├── Services/
@@ -234,6 +370,7 @@ DocAgent Solution (5 Projects)
 ├── 📁 DocAgent.Api
 │   ├── Controllers/
 │   │   ├── DocumentsController.cs      ← Document ingestion & management
+│   │   ├── CollectionsController.cs    ← Chroma collection/database administration
 │   │   ├── RagController.cs            ← Search & RAG operations
 │   │   ├── LlmController.cs            ← Direct LLM access
 │   │   ├── FeedbackController.cs       ← Feedback collection
@@ -274,6 +411,29 @@ curl -X POST http://localhost:5088/api/documents/ingest \
     "chunkOverlap": 200
   }'
 ```
+
+---
+
+### **🗂️ Collections Controller** (`/api/collections`)
+Manage Chroma collections, collection records, databases, and diagnostics.
+
+| Method | Endpoint | Purpose | Why Needed |
+|--------|----------|---------|-----------|
+| `GET` | `/api/collections` | List collections | Inspect available Chroma collections |
+| `GET` | `/api/collections/count` | Count collections | Quick administrative visibility |
+| `GET` | `/api/collections/{name}` | Get collection metadata | Inspect one collection in detail |
+| `POST` | `/api/collections` | Create collection | Prepare isolated storage for a new use case |
+| `POST` | `/api/collections/get-or-create` | Get or create collection | Idempotent collection setup |
+| `PUT` | `/api/collections/{name}` | Update collection metadata or rename | Maintain collection configuration |
+| `DELETE` | `/api/collections/{name}` | Delete collection | Remove unused collections |
+| `GET` | `/api/collections/{name}/records/count` | Count records in a collection | Validate ingestion volume |
+| `POST` | `/api/collections/{name}/records/upsert` | Upsert records | Insert or replace collection records |
+| `POST` | `/api/collections/{name}/records/delete-by-filter` | Delete records by metadata filter | Targeted cleanup inside a collection |
+| `GET` | `/api/collections/databases/{name}/exists` | Check database existence | Verify Chroma database availability |
+| `POST` | `/api/collections/databases` | Create database | Initialize a new Chroma database |
+| `GET` | `/api/collections/diagnostics/health` | Get diagnostics/health | Confirm readiness of database and default collections |
+
+**Important guardrail:** protected default collections such as `doc-agent`, `documents`, and `users` are intentionally blocked from destructive rename/delete operations by the application service layer.
 
 ---
 
@@ -327,9 +487,12 @@ curl -X POST http://localhost:5088/api/rag/ask \
   -d '{
     "question": "What is the main topic of the document?",
     "topK": 5,
-    "maxTokens": 1024
+    "maxTokens": 1024,
+    "documentFilter": "NEET_UG_2026"
   }'
 ```
+
+`documentFilter` is optional. When supplied, retrieval is restricted to chunks whose metadata contains the matching `document_id`, which is useful when multiple uploaded files should be queried independently.
 
 ---
 
