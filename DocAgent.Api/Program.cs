@@ -26,7 +26,6 @@ using (var scope = app.Services.CreateScope())
         if (!await vectorStore.DatabaseExistsAsync("default_database"))
         {
             await vectorStore.CreateDatabaseAsync("default_database");
-            Console.WriteLine("Database 'default_database' created.");
         }
 
         var collections = new[] { "doc-agent", "documents", "users" };
@@ -39,17 +38,11 @@ using (var scope = app.Services.CreateScope())
                 {
                     { "description", $"Default collection {name}" }
                 });
-                Console.WriteLine($"Collection '{name}' created.");
-            }
-            else
-            {
-                Console.WriteLine($"Collection '{name}' already exists.");
             }
         }
     }
-    catch (Exception ex)
+    catch (Exception)
     {
-        Console.WriteLine($"Warning: Could not initialize ChromaDB: {ex.Message}");
     }
 }
 

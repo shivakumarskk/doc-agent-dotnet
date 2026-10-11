@@ -15,7 +15,6 @@
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.25.1" />
     <PackageReference Include="Microsoft.SemanticKernel" Version="1.75.0" />
     <PackageReference Include="PdfPig" Version="0.1.14" />
-    <PackageReference Include="System.Net.Http.Json" Version="10.0.7" />
     <PackageReference Include="Tokenizers.HuggingFace" Version="2.21.4" />
   </ItemGroup>
 

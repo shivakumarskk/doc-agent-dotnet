@@ -1,8 +1,11 @@
+using DocAgent.Core.DTOs;
 using DocAgent.Core.Interfaces;
 using DocAgent.Core.Models;
-using DocAgent.Core.DTOs;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.RegularExpressions;
 
 namespace DocAgent.Application.Services;
 
@@ -101,7 +104,8 @@ public class DocumentService : IDocumentService
         ArgumentNullException.ThrowIfNull(request);
 
         var qVec = _embeddingService.Embed(request.Question);
-        var (ids, documents, metadatas) = await _vectorStore.QueryAsync(_defaultCollection, new[] { qVec }, request.TopK);
+        var where = BuildDocumentWhereFilter(request.DocumentFilter);
+        var (ids, documents, metadatas) = await _vectorStore.QueryAsync(_defaultCollection, new[] { qVec }, request.TopK, where);
 
         var contextChunks = new List<ContextChunkDto>();
         if (ids.Count > 0)
@@ -130,9 +134,10 @@ public class DocumentService : IDocumentService
 
         // 1. Embed the question
         var qVec = _embeddingService.Embed(request.Question);
+        var where = BuildDocumentWhereFilter(request.DocumentFilter);
 
         // 2. Retrieve top-K chunks from vector store
-        var (ids, documents, _) = await _vectorStore.QueryAsync(_defaultCollection, new[] { qVec }, request.TopK);
+        var (ids, documents, _) = await _vectorStore.QueryAsync(_defaultCollection, new[] { qVec }, request.TopK, where);
 
         // 3. Build context from results
         var contextParts = new List<string>();
@@ -189,7 +194,8 @@ Always mention the document ID when referencing information.
         ArgumentNullException.ThrowIfNull(request);
 
         var qVec = _embeddingService.Embed(request.Question);
-        var (ids, documents, _) = await _vectorStore.QueryAsync(_defaultCollection, new[] { qVec }, request.TopK);
+        var where = BuildDocumentWhereFilter(request.DocumentFilter);
+        var (ids, documents, _) = await _vectorStore.QueryAsync(_defaultCollection, new[] { qVec }, request.TopK, where);
 
         var context = documents.Count > 0 ? string.Join("\n\n", documents[0]) : "";
         var contextChunks = new List<ContextChunkDto>();
@@ -312,6 +318,7 @@ Always mention the document ID when referencing information.
         if (string.IsNullOrWhiteSpace(request.Query))
             throw new ArgumentException("Query cannot be empty", nameof(request.Query));
 
+        var queryId = ComputeQueryId(request.Query);
         // 1. Embed the query
         var queryEmbedding = _embeddingService.Embed(request.Query);
 
@@ -329,14 +336,36 @@ Always mention the document ID when referencing information.
             relevantDocuments.AddRange(documents[0]);
         }
 
-        // 4. Build prompt and call LLM for summarization
-        var context = string.Join("\n\n", relevantDocuments);
-        var prompt = $"Answer the question based on the following context:\n\n{context}\n\nQuestion: {request.Query}\nAnswer:";
+        // 4. Retrieve feedback for this query (if any)
+        var feedbacks = _feedbackRepository.GetByQueryId(queryId).ToList();
+        var positiveChunks = feedbacks.Where(f => f.IsPositive).SelectMany(f => f.ContextChunkIds).ToHashSet();
+        var negativeChunks = feedbacks.Where(f => !f.IsPositive).SelectMany(f => f.ContextChunkIds).ToHashSet();
 
-        var modelName = _configuration["Ollama:Model"] ?? "llama2";
+        // Filter or prioritize documents based on feedback
+        var prioritizedDocs = new List<string>();
+        for(int i =0; i < relevantDocuments.Count; i++)
+        {
+            if (positiveChunks.Contains(ids[0][i]))
+            {
+                prioritizedDocs.Insert(0, relevantDocuments[i]);
+            }
+            else if (!negativeChunks.Contains(ids[0][i]))
+            {
+                prioritizedDocs.Add(relevantDocuments[i]);
+            }
+        }
+
+        // 5. Build prompt and call LLM for summarization
+        var context = string.Join("\n\n", prioritizedDocs);
+        var feedbackSummary = feedbacks.Count > 0
+            ? $"Note: Users previously gave feedback on this query. Positive chunks should be emphasized, negative chunks avoided."
+            : string.Empty;
+
+        var prompt = $"Answer the question based on the following context:\n\n{context}\n\n{feedbackSummary}\n\nQuestion: {request.Query}\nAnswer:";
+        var modelName = _configuration["Ollama:Model"] ?? "llama3";
         var summary = await _llmClient.GenerateAsync(modelName, prompt);
 
-        // 5. Build matches from results
+        // 6. Build matches from results
         var matches = new List<SearchMatchDto>();
         if (ids.Count > 0 && documents.Count > 0)
         {
@@ -353,9 +382,31 @@ Always mention the document ID when referencing information.
 
         return new SearchWithSummaryResponseDto
         {
+            QueryId = queryId,
             Query = request.Query,
             Summary = summary,
             Matches = matches
         };
     }
+
+    public static string ComputeQueryId(string query)
+    {
+        using var sha = SHA256.Create();
+        var bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(query));
+        return Convert.ToHexString(bytes);
+    }
+
+    private static Dictionary<string, object>? BuildDocumentWhereFilter(string? documentFilter)
+    {
+        if (string.IsNullOrWhiteSpace(documentFilter))
+        {
+            return null;
+        }
+
+        return new Dictionary<string, object>
+        {
+            ["document_id"] = documentFilter.Trim()
+        };
+    }
+
 }

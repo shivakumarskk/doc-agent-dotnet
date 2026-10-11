@@ -2,6 +2,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using DocAgent.Core.Interfaces;
+using DocAgent.Core.Models;
 
 namespace DocAgent.Infrastructure.VectorStores;
 
@@ -28,7 +29,7 @@ public class ChromaVectorStore : IVectorStore
         _database = database;
     }
 
-    public async Task<List<ChromaCollectionInfo>> ListCollectionsAsync(int? limit = null, int? offset = null)
+    public async Task<List<VectorCollectionInfo>> ListCollectionsAsync(int? limit = null, int? offset = null)
     {
         var queryParams = new List<string>();
         if (limit.HasValue) queryParams.Add($"limit={limit.Value}");
@@ -42,8 +43,8 @@ public class ChromaVectorStore : IVectorStore
         response.EnsureSuccessStatusCode();
 
         var resultJson = await response.Content.ReadAsStringAsync();
-        var result = JsonSerializer.Deserialize<List<ChromaCollectionInfo>>(resultJson);
-        return result ?? new List<ChromaCollectionInfo>();
+        var result = JsonSerializer.Deserialize<List<ChromaCollectionInfo>>(resultJson) ?? new List<ChromaCollectionInfo>();
+        return result.Select(MapCollectionInfo).ToList();
     }
 
     public async Task<int> GetCollectionCountAsync()
@@ -55,7 +56,7 @@ public class ChromaVectorStore : IVectorStore
         return int.Parse(content);
     }
 
-    public async Task<ChromaCollectionInfo> CreateCollectionAsync(string name, Dictionary<string, object>? metadata = null, bool getOrCreate = false)
+    private async Task<ChromaCollectionInfo> CreateCollectionCoreAsync(string name, Dictionary<string, object>? metadata = null, bool getOrCreate = false)
     {
         var payload = new
         {
@@ -85,12 +86,12 @@ public class ChromaVectorStore : IVectorStore
         return JsonSerializer.Deserialize<ChromaCollectionInfo>(resultJson) ?? new ChromaCollectionInfo();
     }
 
-    async Task IVectorStore.CreateCollectionAsync(string name, Dictionary<string, object>? metadata)
+    public async Task CreateCollectionAsync(string name, Dictionary<string, object>? metadata = null)
     {
-        await CreateCollectionAsync(name, metadata, false);
+        await CreateCollectionCoreAsync(name, metadata, false);
     }
 
-    public async Task<ChromaCollectionInfo> GetCollectionAsync(string collectionName)
+    private async Task<ChromaCollectionInfo> GetCollectionCoreAsync(string collectionName)
     {
         var response = await _client.GetAsync($"tenants/{_tenant}/databases/{_database}/collections/{collectionName}");
         response.EnsureSuccessStatusCode();
@@ -99,9 +100,15 @@ public class ChromaVectorStore : IVectorStore
         return JsonSerializer.Deserialize<ChromaCollectionInfo>(resultJson) ?? new ChromaCollectionInfo();
     }
 
+    public async Task<VectorCollectionInfo> GetCollectionAsync(string collectionName)
+    {
+        var collection = await GetCollectionCoreAsync(collectionName);
+        return MapCollectionInfo(collection);
+    }
+
     public async Task AddAsync(string collectionName, string[] ids, string[] documents, float[][] embeddings, Dictionary<string, object>[]? metadatas = null)
     {
-        var collection = await GetCollectionAsync(collectionName);
+        var collection = await GetCollectionCoreAsync(collectionName);
         if (string.IsNullOrEmpty(collection.Id))
             throw new InvalidOperationException($"Collection '{collectionName}' not found or has no Id.");
 
@@ -122,32 +129,65 @@ public class ChromaVectorStore : IVectorStore
         }
     }
 
-    public async Task<(List<List<string>> Ids, List<List<string>> Documents, List<List<Dictionary<string, object>>> Metadatas)> QueryAsync(
-        string collectionName, float[][] queryEmbeddings, int nResults = 3)
+    public async Task<VectorCollectionInfo> GetOrCreateCollectionAsync(string collectionName, Dictionary<string, object>? metadata = null)
     {
-        var collection = await GetCollectionAsync(collectionName);
-        if (string.IsNullOrEmpty(collection.Id))
-            throw new InvalidOperationException($"Collection '{collectionName}' not found or has no Id.");
+        var collection = await CreateCollectionCoreAsync(collectionName, metadata, true);
+        return MapCollectionInfo(collection);
+    }
 
+    public async Task<VectorCollectionInfo> UpdateCollectionAsync(string collectionName, Dictionary<string, object>? metadata = null, string? newName = null)
+    {
         var payload = new
         {
-            query_embeddings = queryEmbeddings,
-            n_results = nResults,
-            include = new[] { "documents", "metadatas", "distances", "embeddings" }
+            name = newName ?? collectionName,
+            metadata = metadata
         };
 
-        var response = await _client.PostAsJsonAsync($"tenants/{_tenant}/databases/{_database}/collections/{collection.Id}/query", payload);
+        var response = await _client.PutAsJsonAsync($"tenants/{_tenant}/databases/{_database}/collections/{collectionName}", payload);
         response.EnsureSuccessStatusCode();
 
         var resultJson = await response.Content.ReadAsStringAsync();
-        var result = JsonSerializer.Deserialize<ChromaQueryResult>(resultJson) ?? new ChromaQueryResult();
-
-        return (result.Ids, result.Documents, result.Metadatas);
+        var collection = JsonSerializer.Deserialize<ChromaCollectionInfo>(resultJson) ?? new ChromaCollectionInfo();
+        return MapCollectionInfo(collection);
     }
+
+    public async Task DeleteCollectionAsync(string collectionName)
+    {
+        var response = await _client.DeleteAsync($"tenants/{_tenant}/databases/{_database}/collections/{collectionName}");
+        response.EnsureSuccessStatusCode();
+    }
+
+    public async Task<(List<List<string>> Ids, List<List<string>> Documents, List<List<Dictionary<string, object>>> Metadatas)> QueryAsync(
+    string collectionName, float[][] queryEmbeddings, int nResults = 3, Dictionary<string, object>? where = null)
+{
+    var collection = await GetCollectionCoreAsync(collectionName);
+    if (string.IsNullOrEmpty(collection.Id))
+        throw new InvalidOperationException($"Collection '{collectionName}' not found or has no Id.");
+
+    var payload = new
+    {
+        query_embeddings = queryEmbeddings,
+        n_results = nResults,
+        where = where,
+        include = new[] { "documents", "metadatas", "distances", "embeddings" }
+    };
+
+    var collectionId = collection.Id.Trim();
+    var response = await _client.PostAsJsonAsync(
+        $"tenants/{_tenant}/databases/{_database}/collections/{collectionId}/query",
+        payload
+    );
+    response.EnsureSuccessStatusCode();
+
+    var resultJson = await response.Content.ReadAsStringAsync();
+    var result = JsonSerializer.Deserialize<ChromaQueryResult>(resultJson) ?? new ChromaQueryResult();
+    
+    return (result.Ids, result.Documents, result.Metadatas);
+}
 
     public async Task<(List<string> Ids, List<string> Documents, List<Dictionary<string, object>> Metadatas)> GetAllAsync(string collectionName)
     {
-        var collection = await GetCollectionAsync(collectionName);
+        var collection = await GetCollectionCoreAsync(collectionName);
         var payload = new
         {
             include = new[] { "documents", "metadatas", "embeddings" }
@@ -164,8 +204,16 @@ public class ChromaVectorStore : IVectorStore
 
     public async Task DeleteAsync(string collectionName, string[] ids)
     {
-        var collection = await GetCollectionAsync(collectionName);
+        var collection = await GetCollectionCoreAsync(collectionName);
         var payload = new { ids = ids };
+        var response = await _client.PostAsJsonAsync($"tenants/{_tenant}/databases/{_database}/collections/{collection.Id}/delete", payload);
+        response.EnsureSuccessStatusCode();
+    }
+
+    public async Task DeleteByFilterAsync(string collectionName, Dictionary<string, object> where)
+    {
+        var collection = await GetCollectionCoreAsync(collectionName);
+        var payload = new { where = where };
         var response = await _client.PostAsJsonAsync($"tenants/{_tenant}/databases/{_database}/collections/{collection.Id}/delete", payload);
         response.EnsureSuccessStatusCode();
     }
@@ -174,7 +222,7 @@ public class ChromaVectorStore : IVectorStore
     {
         try
         {
-            var collection = await GetCollectionAsync(collectionName);
+            var collection = await GetCollectionCoreAsync(collectionName);
             return !string.IsNullOrEmpty(collection.Id);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
@@ -204,7 +252,7 @@ public class ChromaVectorStore : IVectorStore
 
     public async Task UpsertAsync(string collectionName, string[] ids, string[] documents, float[][] embeddings, Dictionary<string, object>[]? metadatas = null)
     {
-        var collection = await GetCollectionAsync(collectionName);
+        var collection = await GetCollectionCoreAsync(collectionName);
         if (string.IsNullOrEmpty(collection.Id))
             throw new InvalidOperationException($"Collection '{collectionName}' not found or has no Id.");
 
@@ -225,10 +273,35 @@ public class ChromaVectorStore : IVectorStore
         }
     }
 
+    public async Task<int> CountAsync(string collectionName)
+    {
+        var collection = await GetCollectionCoreAsync(collectionName);
+        var response = await _client.GetAsync($"tenants/{_tenant}/databases/{_database}/collections/{collection.Id}/count");
+        response.EnsureSuccessStatusCode();
+
+        var content = await response.Content.ReadAsStringAsync();
+        return int.TryParse(content, out var count) ? count : 0;
+    }
+
     public async Task<bool> DatabaseExistsAsync(string databaseName)
     {
         var response = await _client.GetAsync($"tenants/{_tenant}/databases/{databaseName}");
         return response.IsSuccessStatusCode;
+    }
+
+    private static VectorCollectionInfo MapCollectionInfo(ChromaCollectionInfo collection)
+    {
+        return new VectorCollectionInfo
+        {
+            Id = collection.Id,
+            Name = collection.Name,
+            Database = collection.Database,
+            Tenant = collection.Tenant,
+            Version = collection.Version,
+            LogPosition = collection.LogPosition,
+            Dimension = collection.Dimension,
+            Metadata = collection.Metadata
+        };
     }
 }
 

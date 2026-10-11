@@ -42,6 +42,8 @@ public class SearchResponseDto
 /// </summary>
 public class SearchWithSummaryResponseDto
 {
+    public string QueryId { get; set; } = string.Empty;
+
     /// <summary>
     /// The search query
     /// </summary>

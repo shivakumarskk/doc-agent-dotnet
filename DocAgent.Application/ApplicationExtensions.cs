@@ -15,6 +15,7 @@ public static class ApplicationExtensions
     public static IServiceCollection AddApplication(this IServiceCollection services)
     {
         services.AddScoped<IDocumentService, DocumentService>();
+        services.AddScoped<ICollectionAdminService, CollectionAdminService>();
         return services;
     }
 }

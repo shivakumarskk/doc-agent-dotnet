@@ -35,14 +35,10 @@ public static class InfrastructureExtensions
             // Check if model files exist before trying to load them
             if (!File.Exists(modelPath))
             {
-                Console.WriteLine($"[WARNING] Embedding model not found at: {modelPath}");
-                Console.WriteLine("[INFO] EmbeddingService will be unavailable until model files are provided.");
                 return new NullEmbeddingService();
             }
             if (!File.Exists(tokenizerPath))
             {
-                Console.WriteLine($"[WARNING] Tokenizer not found at: {tokenizerPath}");
-                Console.WriteLine("[INFO] EmbeddingService will be unavailable until model files are provided.");
                 return new NullEmbeddingService();
             }
 

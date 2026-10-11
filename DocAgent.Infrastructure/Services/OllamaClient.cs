@@ -32,50 +32,38 @@ public class OllamaClient : ILlmClient
         using var reader = new StreamReader(stream);
 
         var sb = new StringBuilder();
-        bool sawAnyJson = false;
+        string? line;
 
-        while (!reader.EndOfStream)
+        while ((line = await reader.ReadLineAsync()) != null)
         {
-            var line = await reader.ReadLineAsync();
             if (string.IsNullOrWhiteSpace(line)) continue;
 
             try
             {
-                sawAnyJson = true;
                 using var doc = JsonDocument.Parse(line);
                 var root = doc.RootElement;
 
                 if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("response", out var respProp))
                 {
-                    if (respProp.ValueKind == JsonValueKind.String)
+                    sb.Append(respProp.ValueKind == JsonValueKind.String ? respProp.GetString() : respProp.ToString());
+                }
+                else if (root.TryGetProperty("output", out var outProp))
+                {
+                    sb.Append(outProp.ToString());
+                }
+                else if (root.TryGetProperty("choices", out var choices) && choices.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in choices.EnumerateArray())
                     {
-                        sb.Append(respProp.GetString());
-                    }
-                    else
-                    {
-                        sb.Append(respProp.ToString());
+                        if (item.TryGetProperty("text", out var t) && t.ValueKind == JsonValueKind.String)
+                            sb.Append(t.GetString());
+                        else
+                            sb.Append(item.ToString());
                     }
                 }
                 else
                 {
-                    if (root.TryGetProperty("output", out var outProp))
-                    {
-                        sb.Append(outProp.ToString());
-                    }
-                    else if (root.TryGetProperty("choices", out var choices) && choices.ValueKind == JsonValueKind.Array)
-                    {
-                        foreach (var item in choices.EnumerateArray())
-                        {
-                            if (item.TryGetProperty("text", out var t) && t.ValueKind == JsonValueKind.String)
-                                sb.Append(t.GetString());
-                            else
-                                sb.Append(item.ToString());
-                        }
-                    }
-                    else
-                    {
-                        sb.Append(root.ToString());
-                    }
+                    sb.Append(root.ToString());
                 }
 
                 if (root.TryGetProperty("done", out var doneProp) && doneProp.ValueKind == JsonValueKind.True)
@@ -92,31 +80,33 @@ public class OllamaClient : ILlmClient
         return sb.ToString().Trim();
     }
 
+
     public async IAsyncEnumerable<string> StreamGenerateAsync(
-        string model,
-        string prompt,
-        int maxTokens = 512,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+     string model,
+     string prompt,
+     int maxTokens = 512,
+     [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var payload = new { model, prompt, stream = true, options = new { num_predict = maxTokens } };
         var response = await _http.PostAsJsonAsync("/api/generate", payload, cancellationToken);
         response.EnsureSuccessStatusCode();
 
-        using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var reader = new StreamReader(stream);
 
-        while (!reader.EndOfStream)
+        string? line;
+        while ((line = await reader.ReadLineAsync()) != null)
         {
-            var line = await reader.ReadLineAsync();
             if (string.IsNullOrWhiteSpace(line)) continue;
 
-            var doc = JsonDocument.Parse(line);
+            using var doc = JsonDocument.Parse(line);
             if (doc.RootElement.TryGetProperty("response", out var resp))
             {
-                yield return resp.GetString() ?? "";
+                yield return resp.GetString() ?? string.Empty;
             }
         }
     }
+
 
     public async Task<string> StreamAndCollectAsync(
         string model,
